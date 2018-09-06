@@ -132,7 +132,7 @@ type writeDBWorker struct {
 
 func (w *writeDBWorker) run() {
 	defer w.store.wg.Done()
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 5; i++ {
 		go w.updateBatchGroup()
 	}
 	for {
