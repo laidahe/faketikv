@@ -132,9 +132,13 @@ type writeDBWorker struct {
 
 func (w *writeDBWorker) run() {
 	defer w.store.wg.Done()
+	for i := 0; i < 10; i++ {
+		go w.updateBatchGroup()
+	}
 	for {
 		select {
 		case <-w.store.closeCh:
+			close(dataCh)
 			return
 		case <-w.wakeUp:
 		}
@@ -143,38 +147,17 @@ func (w *writeDBWorker) run() {
 		batches, w.mu.batches = w.mu.batches, batches
 		w.mu.Unlock()
 		if len(batches) > 0 {
-			batchesGroups := w.splitBatches(batches)
-			for _, batchGroup := range batchesGroups {
-				w.updateBatchGroup(batchGroup)
-			}
+			dataCh <- batches
 		}
-		// Now the transaction is non blocking, we need to sleep a while waiting for batches.
-		time.Sleep(time.Microsecond * 500)
 	}
 }
 
-func (w *writeDBWorker) splitBatches(batches []*writeDBBatch) [][]*writeDBBatch {
-	splitOffsets := []int{0}
-	var batchGroupEntries int
-	for i, batch := range batches {
-		batchGroupEntries += len(batch.entries)
-		if batchGroupEntries > 4<<10 || i == len(batches)-1 {
-			batchGroupEntries = 0
-			splitOffsets = append(splitOffsets, i+1)
-		}
-	}
+var dataCh = make(chan []*writeDBBatch)
 
-	batchGroups := make([][]*writeDBBatch, len(splitOffsets)-1)
-	for i := 0; i+1 < len(splitOffsets); i++ {
-		batchGroups[i] = batches[splitOffsets[i]:splitOffsets[i+1]]
-	}
-	return batchGroups
-}
-
-func (w *writeDBWorker) updateBatchGroup(batchGroup []*writeDBBatch) {
-	go func() {
+func (w *writeDBWorker) updateBatchGroup() {
+	for ba := range dataCh {
 		e := w.store.db.Update(func(txn *badger.Txn) error {
-			for _, batch := range batchGroup {
+			for _, batch := range ba {
 				for _, entry := range batch.entries {
 					err := txn.SetEntry(entry)
 					if err != nil {
@@ -184,11 +167,11 @@ func (w *writeDBWorker) updateBatchGroup(batchGroup []*writeDBBatch) {
 			}
 			return nil
 		})
-		for _, batch := range batchGroup {
+		for _, batch := range ba {
 			batch.err = e
 			batch.wg.Done()
 		}
-	}()
+	}
 }
 
 type writeLockWorker struct {
